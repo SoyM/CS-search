@@ -2,82 +2,32 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net/http"
-	"regexp"
 	"log"
-	"time"
 	"github.com/PuerkitoBio/goquery"
+	"unicode"
+	"net/url"
+	"encoding/json"
+	"os"
 )
 
-var (
-	ptnIndexItem    = regexp.MustCompile(`<a target="_blank" href="(.+\.html)" title=".+" >(.+)</a>`)
-	ptnContentRough = regexp.MustCompile(`(?s).*<div class="artcontent">(.*)<div id="zhanwei">.*`)
-	ptnBrTag        = regexp.MustCompile(`<br>`)
-	ptnHTMLTag      = regexp.MustCompile(`(?s)</?.*?>`)
-	ptnSpace        = regexp.MustCompile(`(^\s+)|( )`)
-)
-
-func Get(url string) (content string) {
-	res, err := http.Get(url)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
-	}
-
-	data, err2 := ioutil.ReadAll(res.Body)
-	if err2 != nil {
-		log.Fatalf("readAll error: %s", err2)
-		return
-	}
-	content = string(data)
-	return
+type SearchResult struct {
+	Url   string `json:"url"`
+	Title string `json:"title"`
 }
 
-type IndexItem struct {
-	url   string
-	title string
+type SearchResultsSlice struct {
+	SearchResults []SearchResult
 }
 
-func findIndex(content string) (index []IndexItem, err error) {
-	matches := ptnIndexItem.FindAllStringSubmatch(content, 10000)
-	index = make([]IndexItem, len(matches))
-	for i, item := range matches {
-		index[i] = IndexItem{"http://www.yifan100.com" + item[1], item[2]}
-	}
-	return
-}
-
-func readContent(url string) (content string) {
-	raw := Get(url)
-
-	match := ptnContentRough.FindStringSubmatch(raw)
-	if match != nil {
-		content = match[1]
-	} else {
-		return
-	}
-
-	content = ptnBrTag.ReplaceAllString(content, "\r\n")
-	content = ptnHTMLTag.ReplaceAllString(content, "")
-	content = ptnSpace.ReplaceAllString(content, "")
-	return
-}
-
-func search_zhihu()(dataUrl []string, dataTitle []string) {
-	url := "https://www.zhihu.com/search?type=content&q=%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0"
-	res, err := http.Get(url)
+func searchZhihu(searchKey string) (srs SearchResultsSlice) {
+	reqUrl := "https://www.zhihu.com/search?type=content&q=" + searchKey
+	fmt.Println(reqUrl)
+	res, err := http.Get(reqUrl)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
-	}
 
 	//data, err2 := ioutil.ReadAll(res.Body)
 	//if err2 != nil {
@@ -86,29 +36,46 @@ func search_zhihu()(dataUrl []string, dataTitle []string) {
 	//}
 	//fmt.Print(string(data))
 
+	if res.StatusCode != 200 {
+		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+	}
+
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
 		log.Fatal(err)
-	}
-	doc.Find(".Search-container .AnswerItem").Each(func(i int, s *goquery.Selection) {
-		a := s.Find("a")
-		a.Each(func(i2 int, content *goquery.Selection) {
-			url, _ := content.Attr("href")
-			title := a.Text()
-			dataUrl = append(dataUrl, url)
-			dataTitle = append(dataTitle, title)
+		return
+	} else {
+		var srs SearchResultsSlice
+		doc.Find(".Search-container .AnswerItem").Each(func(i int, s *goquery.Selection) {
+			a := s.Find("a").Eq(0)
+			a.Each(func(i2 int, content *goquery.Selection) {
+				linkUrl, _ := content.Attr("href")
+				title := a.Text()
+				srs.SearchResults = append(srs.SearchResults, SearchResult{linkUrl, title,})
+			})
 		})
-	})
-	return dataUrl, dataTitle
+		return srs
+	}
 }
 
-func search_leiphone() (dataUrl []string, dataTitle []string) {
-	url := "https://www.leiphone.com/search?site=&s=%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0"
-	res, err := http.Get(url)
+func searchLeiphone(searchKey string) (SearchResultsSlice) {
+	reqUrl := "https://www.leiphone.com/search?s=" + searchKey + "&site=article"
+
+	res, err := http.Get(reqUrl)
+	fmt.Println(reqUrl)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer res.Body.Close()
+
+	// 输出html
+	//data, err2 := ioutil.ReadAll(res.Body)
+	//if err2 != nil {
+	//	log.Fatalf("readAll error: %s", err2)
+	//	return
+	//}
+	//fmt.Print(string(data))
+
 	if res.StatusCode != 200 {
 		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
 	}
@@ -118,49 +85,73 @@ func search_leiphone() (dataUrl []string, dataTitle []string) {
 		log.Fatal(err)
 	}
 
+	var srs SearchResultsSlice
 	doc.Find("ul[class=\"articleList\"]").Eq(0).Find("li").Each(func(i int, s *goquery.Selection) {
 		a := s.Find("a").Eq(0)
 		a.Next()
 		a.Each(func(i2 int, content *goquery.Selection) {
-			url, _ := content.Attr("href")
+			linkUrl, _ := content.Attr("href")
 			title := a.Text()
-			dataUrl = append(dataUrl, url)
-			dataTitle = append(dataTitle, title)
+			srs.SearchResults = append(srs.SearchResults, SearchResult{linkUrl, title,})
 		})
 	})
-	return dataUrl, dataTitle
+	return srs
+}
+
+func IsChineseChar(str string) bool {
+	for _, r := range str {
+		if unicode.Is(unicode.Scripts["Han"], r) {
+			return true
+		}
+	}
+	return false
+}
+
+func UrlEncoded(str string) (string, error) {
+	u, err := url.Parse(str)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
 }
 
 func search(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	dataUrl, dataTitle := search_leiphone()
-	fmt.Fprintln(w, dataUrl)
-	fmt.Fprintln(w, dataTitle)
-	fmt.Fprintln(w,"-------------------------------------------------")
-	dataUrl, dataTitle = search_zhihu()
-	fmt.Fprintln(w, dataUrl)
-	fmt.Fprintln(w, dataTitle)
-	//输出执行时间，单位为毫秒。
-	fmt.Fprintln(w,time.Since(start))
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Add("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("content-type", "application/json")
+	//start := time.Now()
+	searchKey := r.URL.Query()["q"][0]
+	searchWhere := r.URL.Query()["w"][0]
+	var searchKeyEn string
+	if IsChineseChar(searchKey) {
+		searchKeyEn, _ = UrlEncoded(searchKey)
+	} else {
+		searchKeyEn = searchKey
+	}
+	var srs SearchResultsSlice
+	if searchWhere == "zhihu" {
+		srs = searchZhihu(searchKeyEn)
+	} else if searchWhere == "leiphone" {
+		srs = searchLeiphone(searchKeyEn)
+	}
+
+	if data, err := json.Marshal(srs); err == nil {
+		os.Stdout.Write(data)
+		fmt.Fprintln(w, string(data))
+	} else {
+		fmt.Println("error:", err)
+	}
+
+	//fmt.Fprintln(w, time.Since(start))
 }
 
 func main() {
-	http.HandleFunc("/", search)
+	//http.HandleFunc("/", search)
+	http.HandleFunc("/search", search)
 
-	err := http.ListenAndServe(":9090", nil) //设置监听的端口
-	if err != nil {
+	if err := http.ListenAndServe("0.0.0.0:8081", nil); err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
-
 	fmt.Println("start")
 
-	//index, _ := findIndex(s)
-	//fmt.Println(`Get contents and write to file ...`)
-	//for _, item := range index {
-	//	fmt.Printf("Get content %s from %s and write to file.\n", item.title, item.url)
-	//	fileName := fmt.Sprintf("%s.txt", item.title)
-	//	content := readContent(item.url)
-	//	ioutil.WriteFile(fileName, []byte(content), 0644)
-	//	fmt.Printf("Finish writing to %s.\n", fileName)
-	//}
 }
